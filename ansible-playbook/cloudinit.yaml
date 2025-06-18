@@ -1,0 +1,79 @@
+---
+- name: Apply cloud-init equivalent configuration
+  hosts: target_hosts
+  become: yes
+  vars:
+    proxy_url: "http://svc_proxy_nonrte_netgrp:jLNgeTuuCdbu9h9kesPaA4iEDrzHvXtR@172.22.13.140:3128"
+    no_proxy: "internal.coredge.io,localhost,127.0.0.1,127.0.1.1,10.96.0.0/16,10.244.0.0/16,.svc,.svc.cluster.local,cluster.local,192.168.100.0/24,172.27.106.0/24,172.27.98.0/24,172.26.133.0/24,172.26.135.0/24,172.26.134.0/24,172.26.136.0/24,172.27.84.0/22,172.0.0.0/8,console.mi210.core42.hpc,admin.mi210.core42.hpc,metalcontroller.mi210.core42.hpc"
+    compass_host: "console.mi210.core42.hpc"
+    compass_ip: "172.26.135.202"
+
+  tasks:
+    - name: Enable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PasswordAuthentication'
+        line: 'PasswordAuthentication yes'
+        state: present
+      notify: restart sshd
+
+    - name: Create systemd proxy configuration directory
+      file:
+        path: /etc/systemd/system.conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Configure systemd proxy settings
+      copy:
+        dest: /etc/systemd/system.conf.d/proxy.conf
+        content: |
+          [Manager]
+          DefaultEnvironment="http_proxy={{ proxy_url }}"
+          DefaultEnvironment="https_proxy={{ proxy_url }}"
+          DefaultEnvironment="no_proxy={{ no_proxy }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload systemd
+
+    - name: Configure environment proxy settings
+      copy:
+        dest: /etc/environment
+        content: |
+          http_proxy="{{ proxy_url }}"
+          https_proxy="{{ proxy_url }}"
+          no_proxy="{{ no_proxy }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Add compass host to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ compass_ip }} {{ compass_host }}"
+        state: present
+
+    - name: Download compass host agent
+      get_url:
+        url: "https://{{ compass_host }}/api/cluster-manager/v1/download/compass-host-agent?packageType=debian&arch=amd64"
+        dest: /tmp/compass-host-agent_amd64.deb
+        validate_certs: no
+
+    - name: Install compass host agent
+      apt:
+        deb: /tmp/compass-host-agent_amd64.deb
+        state: present
+
+    - name: Configure compass host agent
+      command: compass-host-agent configure -c {{ compass_host }} -D mbzuai -P default-project -b 8030 -p 8040 -k LJlO0JpNn7UzkqPYgQKRnrtFodQ30l
+      args:
+        creates: /etc/compass-host-agent/config.yaml  # Assuming this is created by configuration
+
+  handlers:
+    - name: restart sshd
+      service:
+        name: sshd
+        state: restarted
+
+    - name: reload systemd
+      command: systemctl daemon-reload
